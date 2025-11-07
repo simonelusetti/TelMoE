@@ -1,0 +1,86 @@
+defaults:
+  - _self_
+
+model:
+  sbert_name: "sentence-transformers/all-MiniLM-L6-v2"
+  expert:
+    num_experts: 4
+    routing: "softmax"
+    routing_tau: 1.0
+    normalize: True
+    dropout: 0.0
+    factor_dim: 384
+    factor_hidden: 0
+    gate_hidden: 0
+    gate_dropout: 0.0
+    shared_transform: True
+    transform_dropout: 0.0
+    reconstruction_hidden: 0
+    use_token_decoder: False
+    decoder_hidden: 384
+    use_balance: False
+    use_diversity: False
+  loss_weights:
+    sent: 1.0
+    token: 1.0
+    entropy: 0.01
+    overlap: 0.01
+    diversity: 0.01
+    balance: 0.01
+  optim:
+    lr: 5e-5
+    weight_decay: 1e-2
+    betas: [0.9, 0.999]
+
+data:
+  rebuild_ds: False
+  train:
+    dataset: "wikiann"
+    batch_size: 32
+    num_workers: 4
+    subset: 1.0
+    shuffle: True
+  eval:
+    dataset: "wikiann"
+    batch_size: 32
+    num_workers: 1
+    subset: 1.0
+    shuffle: False
+
+train:
+  epochs: 10
+  grad_clip: 1.0
+
+eval:
+  eval_only: False
+  metrics_only: True
+
+device: "cuda"
+
+logging:
+  metrics_only: False
+
+array: 0
+
+dora:
+  exclude: ["eval.*", "data.rebuild_ds", "logging.*"]
+
+slurm:
+  partition: "boost_usr_prod"
+  gpus: 1
+  mem_per_gpu: 32
+  time: 240          # minutes
+  cpus_per_gpu: 8
+  setup:
+    - "module load python/3.11.7"
+    - "source /leonardo/home/userexternal/slusetti/MoE/.venv/bin/activate"
+    - "export SLURM_CPU_BIND=none"
+    - "export HF_HOME=/leonardo_work/IscrC_LUSE/slusetti/hf-cache"
+    - "export HF_DATASETS_CACHE=$HF_HOME/datasets"
+    - "export TRANSFORMERS_CACHE=$HF_HOME/transformers"
+    - "export HF_MODULES_CACHE=$HF_HOME/modules"
+    - "export HF_HUB_CACHE=$HF_HOME/hub"
+    - "export HUGGINGFACE_HUB_CACHE=$HF_HOME/hub"
+    - "export HF_HUB_OFFLINE=1"
+    - "export TRANSFORMERS_OFFLINE=1"
+    - "export HF_DATASETS_OFFLINE=1"
