@@ -3,8 +3,9 @@ defaults:
 
 model:
   sbert_name: "sentence-transformers/all-MiniLM-L6-v2"
+  contrastive_tau: 0.07
   expert:
-    num_experts: 4
+    num_experts: 2          # initial experts; telescope splits add more
     routing: "softmax"
     routing_tau: 1.0
     normalize: True
@@ -18,15 +19,15 @@ model:
     reconstruction_hidden: 0
     use_token_decoder: False
     decoder_hidden: 384
-    use_balance: False
-    use_diversity: False
+    use_balance: True
+    use_diversity: True
   loss_weights:
     sent: 1.0
     token: 1.0
     entropy: 0.01
     overlap: 0.01
-    diversity: 0.01
-    balance: 0.01
+    diversity: 0.05
+    balance: 0.05
   optim:
     lr: 5e-5
     weight_decay: 1e-2
@@ -48,8 +49,10 @@ data:
     shuffle: False
 
 train:
-  epochs: 10
   grad_clip: 1.0
+  target_recall: 0.9
+  max_epochs: 30          # per-stage ceiling; stages = target experts - 1
+  target_experts: 8       # total experts after telescoping completes
 
 eval:
   eval_only: False

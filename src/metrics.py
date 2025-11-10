@@ -42,8 +42,11 @@ def build_eval_table(factor_metrics):
     table = PrettyTable()
     table.field_names = ["factor", "precision", "recall", "f1"]
     for factor, stats in sorted(factor_metrics.items()):
+        label = factor
+        if stats.get("frozen"):
+            label = f"{factor} (frozen)"
         table.add_row([
-            factor,
+            label,
             f"{stats.get('precision', 0.0):.4f}",
             f"{stats.get('recall', 0.0):.4f}",
             f"{stats.get('f1', 0.0):.4f}",
@@ -112,6 +115,7 @@ def evaluate_factor_metrics(model, loader, device, logger=None):
             "tp": tp,
             "fp": fp,
             "fn": fn,
+            "frozen": bool(getattr(model, "is_expert_frozen", lambda _idx: False)(idx)),
         }
 
     return results

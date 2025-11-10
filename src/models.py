@@ -1,3 +1,5 @@
+import copy
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -98,6 +100,10 @@ class ExpertModel(nn.Module):
             self.token_decoder = None
 
         self.small_value = 1e-6
+        self.frozen_experts: set[int] = set()
+
+        gate_output = self._get_gate_output_layer()
+        self._register_gate_hooks(gate_output)
 
     @staticmethod
     def _build_transform(in_dim, hidden_dim, out_dim, dropout):
@@ -210,3 +216,120 @@ class ExpertModel(nn.Module):
             "balance": balance,
             "diversity": diversity,
         }
+
+    @staticmethod
+    def _insert_module(module_list, index, module):
+        modules = list(module_list)
+        modules.insert(index, module)
+        return nn.ModuleList(modules)
+
+    def _register_gate_hooks(self, layer):
+        layer.weight.register_hook(self._gate_weight_hook)
+        if layer.bias is not None:
+            layer.bias.register_hook(self._gate_bias_hook)
+
+    def _gate_weight_hook(self, grad):
+        if not self.frozen_experts:
+            return grad
+        mask = torch.ones_like(grad)
+        for idx in self.frozen_experts:
+            if idx < mask.size(0):
+                mask[idx] = 0
+        return grad * mask
+
+    def _gate_bias_hook(self, grad):
+        if not self.frozen_experts:
+            return grad
+        mask = torch.ones_like(grad)
+        for idx in self.frozen_experts:
+            if idx < mask.size(0):
+                mask[idx] = 0
+        return grad * mask
+
+    def _get_gate_output_layer(self):
+        if not isinstance(self.gate, nn.Sequential):
+            raise RuntimeError("Gate must be an nn.Sequential to support telescoping.")
+        last = self.gate[-1]
+        if not isinstance(last, nn.Linear):
+            raise RuntimeError("Expected final gate layer to be nn.Linear.")
+        return last
+
+    def split_expert(self, expert_idx: int):
+        """
+        Duplicate the expert at `expert_idx`, inserting the clone directly after the original.
+        """
+
+        if expert_idx < 0 or expert_idx >= self.num_experts:
+            raise ValueError(f"expert_idx must be in [0, {self.num_experts}), got {expert_idx}")
+
+        output_layer = self._get_gate_output_layer()
+        insert_at = expert_idx + 1
+        device = output_layer.weight.device
+        dtype = output_layer.weight.dtype
+
+        new_linear = nn.Linear(
+            output_layer.in_features,
+            output_layer.out_features + 1,
+            bias=output_layer.bias is not None,
+        ).to(device=device, dtype=dtype)
+
+        with torch.no_grad():
+            old_w = output_layer.weight.data
+            new_w = new_linear.weight.data
+            new_w[:insert_at] = old_w[:insert_at]
+            new_w[insert_at] = old_w[expert_idx]
+            new_w[insert_at + 1 :] = old_w[insert_at:]
+
+            if output_layer.bias is not None:
+                old_b = output_layer.bias.data
+                new_b = new_linear.bias.data
+                new_b[:insert_at] = old_b[:insert_at]
+                new_b[insert_at] = old_b[expert_idx]
+                new_b[insert_at + 1 :] = old_b[insert_at:]
+
+        self.gate[-1] = new_linear
+        self._register_gate_hooks(new_linear)
+        self._shift_frozen_indices(insert_at)
+        self.num_experts += 1
+
+        if self.expert_transforms is not None:
+            clone = copy.deepcopy(self.expert_transforms[expert_idx])
+            clone = clone.to(device=device, dtype=dtype)
+            self.expert_transforms = self._insert_module(self.expert_transforms, insert_at, clone)
+
+        if len(self.reconstruction_heads) > 0:
+            clone = copy.deepcopy(self.reconstruction_heads[expert_idx])
+            clone = clone.to(device=device, dtype=dtype)
+            self.reconstruction_heads = self._insert_module(
+                self.reconstruction_heads, insert_at, clone
+            )
+
+    def _shift_frozen_indices(self, insert_at: int):
+        if not self.frozen_experts:
+            return
+        updated = set()
+        for idx in self.frozen_experts:
+            if idx >= insert_at:
+                updated.add(idx + 1)
+            else:
+                updated.add(idx)
+        self.frozen_experts = updated
+
+    @staticmethod
+    def _set_module_trainable(module, trainable: bool):
+        for param in module.parameters():
+            param.requires_grad_(trainable)
+
+    def freeze_expert(self, expert_idx: int):
+        if expert_idx < 0 or expert_idx >= self.num_experts:
+            raise ValueError(f"expert_idx must be in [0, {self.num_experts}), got {expert_idx}")
+        if expert_idx in self.frozen_experts:
+            return
+        self.frozen_experts.add(expert_idx)
+        if self.expert_transforms is not None:
+            self._set_module_trainable(self.expert_transforms[expert_idx], False)
+        if len(self.reconstruction_heads) > expert_idx:
+            self._set_module_trainable(self.reconstruction_heads[expert_idx], False)
+
+    def is_expert_frozen(self, expert_idx: int) -> bool:
+        return expert_idx in self.frozen_experts
